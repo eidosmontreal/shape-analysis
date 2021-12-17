@@ -1,0 +1,17 @@
+name: metric-conv
+channels:
+    - pytorch
+    - conda-forge
+    - defaults
+dependencies:
+    - python==3.8
+    - numpy==1.19.1
+    - matplotlib==3.3.0
+    - pytorch==1.5.0
+    - torchvision
+    - pandas==1.0.4
+    - tqdm==4.46.1
+    - trimesh==3.6.43
+    - pip
+    - pip:
+        - pytest==6.1.2

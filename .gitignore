@@ -1,0 +1,10 @@
+__pycache__/
+
+junk/
+data/
+logs/
+tmp/
+
+*.swp
+*.pth
+*.DS_store

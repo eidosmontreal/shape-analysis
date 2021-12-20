@@ -15,7 +15,7 @@ To get started, follow these steps:
 **1. Clone the repo.**
 Run the following in your console:
 ```bash
-git clone https://git.sqexeu.com/babbasi/shape_analysis
+git clone https://github.com/eidosmontreal/shape-analysis.git
 cd shape_analysis
 export PYTHONPATH=$PWD:$PYTHONPATH
 ```
@@ -87,3 +87,6 @@ One may test basic functionalities of this repo using [pytest](https://docs.pyte
 ```bash
 $ pytest tests
 ```
+
+## Acknowledgement
+This library was developped by Bilal Abbasi while he was working at Eidos-Montreal and Eidos-Sherbrooke.

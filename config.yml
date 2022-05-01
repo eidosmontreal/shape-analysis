@@ -1,0 +1,19 @@
+classes:
+    coseg: 
+        - tele_aliens
+        - chairs
+        - vases
+data_dir:
+    coseg: data/COSEG
+    faust: data/FAUST
+datasets:
+    segmentation: 
+        - COSEG
+        - HumanSegmentation
+    correspondence: 
+        - FAUST
+metrics:
+    face: FaceMetric
+    feature: FeatureMetric
+    tangent: TangentMetric
+

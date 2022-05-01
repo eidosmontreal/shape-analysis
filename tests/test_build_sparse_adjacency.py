@@ -1,13 +1,16 @@
-import numpy as np
 import torch
 
-from models import metric_conv
+from models import metric
 
 
 class TestBuildSparseAdjacency:
+    """
+    Class of tests for ``build_sparse_adjacency`` function in the ``metric`` module.
+    """
+
     def test_build_sparse_adjacency(self):
         """
-        Test for `metric_conv.build_sparse_adjacency` when `symmetryc=False` and `remove_reference=False`.
+        Test for `metric.build_sparse_adjacency` when `symmetryc=False` and `remove_reference=False`.
         """
         # Build a dense sparse matrix of size (n_nodes,n_nodes) with nnz non-zero elements.
         n_nodes = 10
@@ -46,17 +49,23 @@ class TestBuildSparseAdjacency:
         sum_row = matrix.sum(dim=1)
         answer = matrix / sum_row.view(n_nodes, 1)
 
-        idx_identity = torch.cat((torch.arange(n_nodes).view(1, n_nodes), torch.arange(n_nodes).view(1, n_nodes)), dim=0)
+        idx_identity = torch.cat(
+            (
+                torch.arange(n_nodes).view(1, n_nodes),
+                torch.arange(n_nodes).view(1, n_nodes),
+            ),
+            dim=0,
+        )
 
         idx = torch.cat((idx_identity, idx1, idx2), dim=1)
         weights = torch.cat((weights_diag, weights1, weights2))
-        x = metric_conv.build_sparse_adjacency(idx, weights, device="cpu", symmetric=False, remove_reference=False)
+        x = metric.build_sparse_adjacency(idx, weights, device="cpu", symmetric=False, remove_reference=False)
         # assert (torch.abs(x.to_dense() - answer) < 1e-6).sum() == answer.nelement()
         assert (torch.abs(x.to_dense() - answer) < 1e-6).sum() == answer.nelement()
 
     def test_build_sparse_adjacency_symmetric(self):
         """
-        Test for `metric_conv.build_sparse_adjacency` when `symmetric=True`.
+        Test for `metric.build_sparse_adjacency` when `symmetric=True`.
         """
         # Build a dense sparse matrix of size (n_nodes,n_nodes) with nnz non-zero elements.
         n_nodes = 10
@@ -96,16 +105,22 @@ class TestBuildSparseAdjacency:
         matrix = matrix / sum_row.view(n_nodes, 1)
         answer = 0.5 * (matrix + matrix.t())  # Symmetrize matrix (this is what will be tested against)
 
-        idx_identity = torch.cat((torch.arange(n_nodes).view(1, n_nodes), torch.arange(n_nodes).view(1, n_nodes)), dim=0)
+        idx_identity = torch.cat(
+            (
+                torch.arange(n_nodes).view(1, n_nodes),
+                torch.arange(n_nodes).view(1, n_nodes),
+            ),
+            dim=0,
+        )
 
         idx = torch.cat((idx_identity, idx1, idx2), dim=1)
         weights = torch.cat((weights_diag, weights1, weights2))
-        x = metric_conv.build_sparse_adjacency(idx, weights, device="cpu", symmetric=True, remove_reference=False)
+        x = metric.build_sparse_adjacency(idx, weights, device="cpu", symmetric=True, remove_reference=False)
         assert (torch.abs(x.to_dense() - answer) < 1e-6).sum() == answer.nelement()
 
     def test_build_sparse_adjacency_remove_reference(self):
         """
-        Test for `metric_conv.build_sparse_adjacency` when `remove_reference=True`.
+        Test for `metric.build_sparse_adjacency` when `remove_reference=True`.
         """
         # Build a dense sparse matrix of size (n_nodes,n_nodes) with nnz non-zero elements.
         n_nodes = 10
@@ -144,9 +159,15 @@ class TestBuildSparseAdjacency:
         sum_row = matrix.sum(dim=1)
         answer = matrix / sum_row.view(n_nodes, 1)
 
-        idx_identity = torch.cat((torch.arange(n_nodes).view(1, n_nodes), torch.arange(n_nodes).view(1, n_nodes)), dim=0)
+        idx_identity = torch.cat(
+            (
+                torch.arange(n_nodes).view(1, n_nodes),
+                torch.arange(n_nodes).view(1, n_nodes),
+            ),
+            dim=0,
+        )
 
         idx = torch.cat((idx_identity, idx1, idx2), dim=1)
         weights = torch.cat((weights_diag, weights1, weights2))
-        x = metric_conv.build_sparse_adjacency(idx, weights, device="cpu", symmetric=False, remove_reference=True)
+        x = metric.build_sparse_adjacency(idx, weights, device="cpu", symmetric=False, remove_reference=True)
         assert (torch.abs(x.to_dense() - answer) < 1e-6).sum() == answer.nelement()

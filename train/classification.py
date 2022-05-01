@@ -1,221 +1,244 @@
-import matplotlib
-
-matplotlib.use("Agg")
-
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import numpy as np
-
-import torch_geometric
-import torch_geometric.transforms as T
-import torch_geometric.datasets as datasets
-
-import pdb, os, time, argparse, json
+import os
+import time
 from os.path import join
+from typing import Tuple, Type
+
+import numpy as np
+import torch
+import train_args
+import yaml
+from torch import FloatTensor, nn, optim
+from torch.nn import functional
+from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-import utils
+import datasets
 import models
+import utils
 
-import train_args
 
-parser = train_args.get_parser()
-args = parser.parse_args()
-args = dict(vars(args))
+def train(
+    model: Type[nn.Module],
+    train_loader: Type[DataLoader],
+    optimizer: Type[optim.Optimizer],
+    iteration=0,
+    scheduler: Type[FloatTensor] = None,
+    batch_size: int = 1,
+    in_channels: int = 3,
+    orthonormality_penalty: float = 0.0,
+    frobenius_penalty: float = 0.0,
+) -> Tuple[nn.Module, optim.Optimizer, FloatTensor, int]:
+    """
+    Trains model on data loaded by ``train_loader`` using ``optimizer``.
 
-torch.manual_seed(args["seed"])
+    :param model: Model to be trained
+    :param train_loader: Loader for the training data
+    :param optimizer: Optimizer used to optimize model's weights
+    :param iteration: Iteration count of number of backprops
+    :param scheduler: Schedule of learning rates for optimizer
+    :param batch_size: Number of items in batch
+    :param in_channels: Number of input features for model
+    :param orthonormality_penalty: Weight of orthonormality penalization
+    :param frobenius_penalty: Weight of frobenius penalization
 
-args["time_stamp"] = time.strftime("%m_%d_%H%M%S")
+    :return: Returns updated model, optimizer, averaged loss over all iterations, and iteration count
+    """
 
-root = join(os.path.dirname(os.path.realpath(__file__)), "..")
-device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = "cuda" if torch.cuda.is_available() else "cpu"
 
-# Load dataset
-if args["dataset"] in ["ModelNet10", "ModelNet40"]:
-    name = args["dataset"].split("ModelNet")[1]
-    pre_transform = T.Compose(
-        [
-            T.SamplePoints(
-                args["num_vertices"], remove_faces=False, include_normals=True
-            ),
-            T.KNNGraph(),
-        ]
-    )
-    train_dataset = getattr(datasets, "ModelNet")(
-        join("data", args["dataset"]),
-        name=name,
-        train=True,
-        pre_transform=pre_transform,
-    )
-    test_dataset = getattr(datasets, "ModelNet")(
-        join("data", args["dataset"]),
-        name=name,
-        train=False,
-        pre_transform=pre_transform,
-    )
+    # Run training iterations to optimize weights
+    loss_epoch = torch.zeros(len(train_loader))
+    idx = 0
 
-elif args["dataset"] == "ShapeNet":
-
-    class SamplePoints(object):
-        """
-        Sample a point cloud uniformly.
-        """
-
-        def __init__(self, num_vertices):
-            self.num_vertices = num_vertices
-
-        def __call__(self, data):
-            num = len(data.pos)
-            idx = torch.randperm(num)[: self.num_vertices]
-            data.pos = data.pos[idx]
-            return data
-
-    pre_transform = T.Compose([SamplePoints(args["num_vertices"]), T.KNNGraph()])
-    train_dataset = getattr(datasets, args["dataset"])(
-        join("data", args["dataset"]), split="train", pre_transform=pre_transform
-    )
-    test_dataset = getattr(datasets, args["dataset"])(
-        join("data", args["dataset"]), split="test", pre_transform=pre_transform
-    )
-
-train_loader = torch_geometric.data.DataLoader(train_dataset, shuffle=True)
-test_loader = torch_geometric.data.DataLoader(test_dataset, shuffle=False)
-print(
-    "Datasets loaded. ({} in train set, {} in test set)".format(
-        len(train_dataset), len(test_dataset)
-    )
-)
-
-# Load model
-model = getattr(models, args["model"])(
-    args["in_features"],
-    args["out_features"],
-    args["num_vertices"],
-    args["embedding_dim"],
-)
-model = model.to(device)
-print("Model loaded. ({} parameters)".format(utils.num_parameters(model)))
-
-# Define optimizer and scheduler
-optimizer = torch.optim.Adam(
-    model.parameters(), lr=args["lr"], betas=(0.9, 0.99), weight_decay=args["tikhonov"]
-)
-num_gradient_steps = int((len(train_dataset) / args["batch_size"]) * args["n_epochs"])
-if args["scheduler"] == "step":
-    scheduler = args["lr"] * args["decay_rate"] ** torch.linspace(
-        0, num_gradient_steps, 1
-    )
-elif args["scheduler"] == "cosine":
-    scheduler = (
-        args["min_lr"]
-        + (args["lr"] - args["min_lr"])
-        * (torch.cos(torch.linspace(0, np.pi, num_gradient_steps)) + 1)
-        / 2
-    )
-
-n_epochs = args["n_epochs"]
-bsz = args["batch_size"]
-
-# Create logging files/folders for losses
-if args["dir_name"] is None:
-    args["dir_name"] = args["time_stamp"]
-log_dir = join(root, "logs", args["dataset"], "classification", args["dir_name"])
-os.makedirs(log_dir, exist_ok=True)
-epoch_log = open(join(log_dir, "train.csv"), "w")
-print("epoch,loss", file=epoch_log, flush=True)
-training_log = open(join(log_dir, "train_iterations.csv"), "w")
-print("epoch,iteration,loss", file=training_log, flush=True)
-test_log = open(join(log_dir, "test.csv"), "w")
-print("epoch,accuracy", file=test_log, flush=True)
-
-# Dump experiment args in a json
-iteration = 0
-utils.print_dict(args)
-with open(join(log_dir, "args.json"), "w") as f:
-    json.dump(args, f)
-
-# Run training iterations to optimize weights
-sched_it = 0
-training_loop = tqdm(range(n_epochs))
-for e in training_loop:
-    loss_epoch = 0
-    iteration = 0
-
+    # TRAINING LOOP
     model.train()
-    num_pts = 0
-    for data in train_loader:
-        V = data.pos.to(device)
-        if len(V) != args["num_vertices"]:
-            num_pts += 1
-            continue
-        E = torch.sparse.FloatTensor(
-            data.edge_index,
-            torch.ones(data.edge_index.shape[1]),
-            torch.Size([args["num_vertices"], args["num_vertices"]]),
-        ).to(device)
-        target = (
-            data.y if args["dataset"] in ["ModelNet10", "ModelNet40"] else data.category
-        )
+    for (v, e, f), target in train_loader:
+        v = v[0].to(device)
+        e = e[0].to(device)
+        f = f[0].to(device)
+        target = target[0].to(device)
 
-        pred = model(V, V, E)
-        loss = -F.log_softmax(pred, dim=1)[0][target]
-        (loss / bsz).backward()
+        if in_channels == 1:
+            input_features = torch.ones((len(v), 1)).to(device)
+        elif in_channels == 3:
+            # Use positions as features
+            input_features = v
+        pred = model(input_features, v, e, f)
 
-        if (iteration + 1) % bsz == 0:
-            # Every [batch-size] iterations update weights
+        # Compute losses
+        loss = -functional.log_softmax(pred, dim=0)[target]
+        if orthonormality_penalty > 0:
+            loss += utils.orthonormality_penalization(model.metric_per_vertex)
+        if frobenius_penalty > 0:
+            loss += utils.frobenius_norm_penalization(model.metric_per_vertex)
+
+        # Backpropagate loss
+        loss = loss / batch_size
+        loss.backward()
+
+        if (iteration + 1) % batch_size == 0:
+            # Every [batch-size] iteration(s) update weights
             optimizer.step()
             optimizer.zero_grad()
-            if args["scheduler"] is not None:
+            if scheduler is not None:
                 for param in optimizer.param_groups:
-                    param["lr"] = scheduler[sched_it]
-                sched_it += 1
+                    param["lr"] = scheduler[int((iteration + 1) / batch_size - 1)]
+
+        loss_epoch[idx] = loss.cpu().data
+        iteration += 1
+        idx += 1
+
+    loss_mean = loss_epoch.mean()
+    loss_std = loss_epoch.std()
+
+    return model, optimizer, loss_mean, loss_std, iteration
+
+
+def test(model: Type[nn.Module], test_loader: Type[DataLoader], in_channels: int = 3) -> FloatTensor:
+    """
+    Tests given ``model`` with ``test_loader``.
+
+    :param model: Model to be tested
+    :param test_loader: ``DataLoader`` loading test data
+    :param in_channels: Number of input features per vertex for model
+
+    :return: Test accuracy
+    """
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    acc_epoch = torch.zeros(len(test_loader))
+    loss_epoch = torch.zeros(len(test_loader))
+    class_acc = {}
+    idx = 0
+
+    # TESTING LOOP
+    model.eval()
+    for (v, e, f), target in test_loader:
+        v = v[0].to(device)
+        e = e[0].to(device)
+        f = f[0].to(device)
+        target = target[0].to(device)
+        if str(int(target)) not in class_acc.keys():
+            class_acc[str(int(target))] = 0
+
+        if in_channels == 1:
+            in_features = torch.ones((len(v), 1)).to(device)
+        elif in_channels == 3:
+            in_features = v
+
+        pred = model(in_features, v, e, f)
+
+        loss_epoch[idx] = -functional.log_softmax(pred, dim=0)[target].cpu().data
+        acc_epoch[idx] = functional.softmax(pred, dim=0).max(0)[1].eq(target).cpu().data
+        class_acc[str(int(target))] += int(acc_epoch[idx])
+        idx += 1
+
+    loss_mean = loss_epoch.mean()
+    loss_std = loss_epoch.std()
+
+    acc_mean = acc_epoch.mean()
+    acc_std = acc_epoch.std()
+    return loss_mean, loss_std, acc_mean, acc_std, class_acc
+
+
+if __name__ == "__main__":
+    root = join(os.path.dirname(os.path.realpath(__file__)), "..")
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    # Parse input arguments
+    parser = train_args.get_parser()
+    args = parser.parse_args()
+    if args.yaml is not None:
+        args = yaml.safe_load(open(args.yaml))
+    else:
+        assert args.model is not None and args.dataset is not None, "Indicate which model and dataset to use."
+        args = dict(vars(args))
+    args["time_stamp"] = time.strftime("%m_%d_%H%M%S")
+
+    if args["dir_name"] is None:
+        args["dir_name"] = args["time_stamp"]
+
+    # Set seed
+    torch.manual_seed(args["seed"])
+
+    # Create logging files/folders for losses
+    log_dir = join(root, "logs", args["dataset"], "classification", args["dir_name"])
+    os.makedirs(log_dir, exist_ok=True)
+    epoch_log = open(join(log_dir, "train_test.csv"), "w")
+    print("epoch,train_loss_mean,train_loss_std,test_loss_mean,test_loss_std,acc_mean,acc_std", file=epoch_log, flush=True)
+
+    # Load dataset and define dataloader
+    train_dataset = datasets.MeshCNNDataset(join(root, "data", args["dataset"]), train=True)
+    test_dataset = datasets.MeshCNNDataset(join(root, "data", args["dataset"]), train=False)
+
+    train_loader = DataLoader(train_dataset, shuffle=True)
+    test_loader = DataLoader(test_dataset, shuffle=False)
+    print(f"Datasets loaded. ({len(train_dataset)} in train set, {len(test_dataset)} in test set)")
+    args["out_channels"] = len(train_dataset.class_dict)
+
+    # Load model
+    model = getattr(models, args["model"])(args["in_channels"], args["out_channels"], **args)
+    model = model.to(device)
+    args["num_parameters"] = utils.num_parameters(model)
+    print(f"Model loaded. ({args['num_parameters']} parameters)")
+
+    # Define optimizer and scheduler
+    optimizer = torch.optim.Adam(model.parameters(), lr=args["lr"], betas=(0.9, 0.99), weight_decay=args["tikhonov"])
+    num_gradient_steps = int((len(train_dataset) / args["batch_size"]) * args["n_epochs"])
+    if args["scheduler"] == "step":
+        scheduler = args["lr"] * args["decay_rate"] ** torch.linspace(0, num_gradient_steps, 1)
+    elif args["scheduler"] == "cosine":
+        scheduler = (
+            args["min_lr"] + (args["lr"] - args["min_lr"]) * (torch.cos(torch.linspace(0, np.pi, num_gradient_steps)) + 1) / 2
+        )
+    else:
+        scheduler = None
+
+    # Dump experiment args in a yaml
+    utils.print_dict(args)
+    with open(join(log_dir, "args.yaml"), "w") as f:
+        yaml.dump(args, f)
+
+    # Training / test loop
+    iteration = 0
+    training_loop = tqdm(range(args["n_epochs"]))
+    for epoch in training_loop:
+
+        model, optimizer, train_loss_mean, train_loss_std, iteration = train(
+            model,
+            train_loader,
+            optimizer,
+            iteration,
+            scheduler,
+            args["batch_size"],
+            args["in_channels"],
+            args["orthonormality_penalty"],
+            args["frobenius_penalty"],
+        )
+        test_loss_mean, test_loss_std, acc_mean, acc_std, class_acc = test(model, test_loader, args["in_channels"])
+        with open(join(log_dir, "class_acc.yaml"), "w") as f:
+            yaml.dump(class_acc, f)
 
         print(
-            "%d,%d,%.5f" % (e, iteration, loss.cpu().data.numpy()),
-            file=training_log,
+            "%d,%.5f,%.5f,%.5f,%.5f,%.5f,%.5f"
+            % (epoch, train_loss_mean, train_loss_std, test_loss_mean, test_loss_std, acc_mean, acc_std),
+            file=epoch_log,
             flush=True,
         )
-        loss_epoch += loss.cpu().data.numpy()
-        iteration += 1
+        training_loop.set_description("loss=%.4f,acc=%.4f" % (float(train_loss_mean), float(acc_mean)))
 
-    loss_epoch /= iteration
-    print("%d,%.5f" % (e, loss_epoch), file=epoch_log, flush=True)
-    print("{} unavailable in training set.".format(num_pts))
-    ## Test model
-    accuracy = 0
-    iteration_test = 0
+        # Plot training/test data
+        if epoch % args["snapshot_freq"] == 0:
+            utils.plot_train_test([log_dir])
+            torch.save(
+                {
+                    "weights": model.state_dict(),
+                    "epoch": epoch,
+                    "train_loss": train_loss_mean,
+                    "accuracy": acc_mean,
+                },
+                join(log_dir, "experiment.pth"),
+            )
 
-    model.eval()
-    num_pts = 0
-    for data in test_loader:
-        V = data.pos.to(device)
-        if len(V) != args["num_vertices"]:
-            num_pts += 1
-            continue
-        E = torch.sparse.FloatTensor(
-            data.edge_index, torch.ones(data.edge_index.shape[1])
-        ).to(device)
-        target = (
-            data.y if args["dataset"] in ["ModelNet10", "ModelNet40"] else data.category
-        )
-        target = target.to(device)
-
-        pred = model(V, V, E)
-        label = F.softmax(pred, dim=1).max(1)[1]
-        accuracy += (label == target).float()
-        iteration_test += 1
-
-    accuracy /= iteration_test
-    print("%d,%.5f" % (e, accuracy), file=test_log, flush=True)
-    print("{} unavailable in test set.".format(num_pts))
-
-    if e % 10 == 0:
-        utils.plot_all_iterations(log_dir)
-        torch.save({"weights": model.state_dict()}, join(log_dir, "weights.pth"))
-
-    training_loop.set_description("%.4f,%.4f" % (float(loss_epoch), float(accuracy)))
-
-training_log.close()
-epoch_log.close()
-print("Training complete.")
+    epoch_log.close()
+    print("Training complete.")

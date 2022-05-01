@@ -1,11 +1,72 @@
-import numpy as np
+from typing import NoReturn
 
 import torch
-from torch import nn
-from torch import FloatTensor, LongTensor, sparse
+from torch import FloatTensor, LongTensor, nn
 from torch.nn import functional as F
 
+from .mesh_pool import MeshPool
 from .metric_conv import MetricConv
+
+
+class MetricConvBlock(nn.Module):
+    r"""
+    Residual block using ``MetricConv`` layer for forward propagation. The computation may be expressed as:
+
+                                        :math:y=ELU(MetricConv(x)
+
+    :param in_channels: Number of hidden units used in residual layer
+    :param out_channels: Number of hidden units used in residual layer
+    :param info: Which metric tensor to use
+    :param metric_in_feats: Number of input features for ``MetricConv``
+    :param metric_n_hidden: Number of hidden parameters for ``MetricConv``
+    :param embedding_dim: Embedding dimension of metric tensor used in ``MetricConv``
+    :param symmetric: Boolean indicating symmetry of metric used in ``MetricConv``
+    """
+
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        info: str = "tangent",
+        metric_n_hidden: int = 32,
+        embedding_dim: int = 3,
+        symmetric: bool = True,
+    ):
+        super(MetricConvBlock, self).__init__()
+        # Initialize MetricConv CNN operator
+        self.conv = MetricConv(
+            in_channels,
+            out_channels,
+            info=info,
+            metric_n_hidden=metric_n_hidden,
+            embedding_dim=embedding_dim,
+            symmetric=symmetric,
+        )
+        self.nonlinear = nn.ELU()
+
+    def forward(
+        self,
+        features: FloatTensor,
+        vertices: FloatTensor,
+        edges: LongTensor,
+        faces: LongTensor,
+        eps: float = 1e-5,
+    ) -> FloatTensor:
+        r"""
+        :param features: Input features per vertex
+        :param vertices: Positions of vectors in \mathbf{R}^3
+        :param edges: Edge connectivity of vertices
+        :param faces: Face indices of vertices
+        :param eps: Small epsilon used to avoid division by 0
+
+        :return: Returns tensor with ``n_hidden`` features for each vertex
+        """
+        x = self.conv(features, vertices, edges, faces)
+        x = (x - x.mean(dim=0)) / (x.std(dim=0) + eps)
+        x = self.nonlinear(x)
+        self.metric_per_vertex = self.conv.metric_per_vertex
+        return x
+
 
 class MetricResBlock(nn.Module):
     r"""
@@ -15,35 +76,57 @@ class MetricResBlock(nn.Module):
 
     :param n_hidden: Number of hidden units used in residual layer
     :param info: Which metric tensor to use
-    :param metric_in_feats: Number of input features for ``MetricConv`` 
+    :param metric_in_feats: Number of input features for ``MetricConv``
     :param metric_n_hidden: Number of hidden parameters for ``MetricConv``
     :param embedding_dim: Embedding dimension of metric tensor used in ``MetricConv``
     :param symmetric: Boolean indicating symmetry of metric used in ``MetricConv``
     """
-    def __init__(self,n_hidden: int, info: str='tangent',metric_in_feats: int=6, metric_n_hidden: int=32, embedding_dim: int=3,symmetric: bool=True):
-        super(MetricResBlock,self).__init__() 
+
+    def __init__(
+        self,
+        n_hidden: int,
+        info: str = "tangent",
+        metric_n_hidden: int = 32,
+        embedding_dim: int = 3,
+        symmetric: bool = True,
+    ):
+        super(MetricResBlock, self).__init__()
         # Initialize MetricConv CNN operator
-        self.conv = MetricConv(n_hidden,n_hidden,
-                            info=info,
-                            metric_n_hidden=metric_n_hidden,
-                            embedding_dim=embedding_dim,
-                            symmetric=symmetric) 
+        self.conv = MetricConv(
+            n_hidden,
+            n_hidden,
+            info=info,
+            metric_n_hidden=metric_n_hidden,
+            embedding_dim=embedding_dim,
+            symmetric=symmetric,
+        )
         self.nonlinear = nn.ELU()
 
-    def forward(self, features: FloatTensor, pos: FloatTensor ,edges: LongTensor, faces: LongTensor, eps: float=1e-5) -> FloatTensor:
+    def forward(
+        self,
+        features: FloatTensor,
+        vertices: FloatTensor,
+        edges: LongTensor,
+        faces: LongTensor,
+        eps: float = 1e-5,
+    ) -> FloatTensor:
         r"""
         :param features: Input features per vertex
-        :param pos: Positions of vectors in \mathbf{R}^3
+        :param vertices: Positions of vectors in \mathbf{R}^3
         :param edges: Edge connectivity of vertices
         :param faces: Face indices of vertices
+        :param eps: Small epsilon used to avoid division by 0
+
+        :return: Returns tensor with ``n_hidden`` features for each vertex
         """
-        residual = features.clone() # Store original features to be added back as the residual 
-        x = self.conv(features,pos,edges,faces)
-        x = (x-x.mean(dim=0))/(x.std(dim=0)+eps)
+        residual = features.clone()  # Store original features to be added back as the residual
+        x = self.conv(features, vertices, edges, faces)
+        x = (x - x.mean(dim=0)) / (x.std(dim=0) + eps)
         x = self.nonlinear(x)
-        out = (x+residual)/2 # Add back residual and divide by 2 for average
+        out = (x + residual) / 2  # Add back residual and divide by 2 for average
         self.metric_per_vertex = self.conv.metric_per_vertex
         return out
+
 
 class MetricResNet(nn.Module):
     r"""
@@ -58,144 +141,66 @@ class MetricResNet(nn.Module):
         * n_hidden (``int``) -- Number of hidden layers used for for residual blocks
         * embedding_dim (``int``) -- Embedding dimension of metric tensor used in ``MetricConv``
     """
-    def __init__(self,in_feats: int,out_feats: int,**kwargs):
-        super(MetricResNet,self).__init__() 
-        n_layers =  kwargs['n_layers'] if 'n_layers' in kwargs.keys() else 8
-        info =  kwargs['info'] if 'info' in kwargs.keys() else 'vanilla'
-        n_hidden =  kwargs['n_hidden'] if 'n_hidden' in kwargs.keys() else 64 
-        embedding_dim =  kwargs['embedding_dim'] if 'embedding_dim' in kwargs.keys() else 8
 
-        self.conv1 = MetricConv(in_feats,n_hidden,info=info,embedding_dim=embedding_dim)
-        
+    def __init__(self, in_feats: int, out_feats: int, **kwargs):
+        super(MetricResNet, self).__init__()
+        n_layers = kwargs["n_layers"] if "n_layers" in kwargs.keys() else 8
+        info = kwargs["info"] if "info" in kwargs.keys() else "vanilla"
+        n_hidden = kwargs["n_hidden"] if "n_hidden" in kwargs.keys() else 64
+        embedding_dim = kwargs["embedding_dim"] if "embedding_dim" in kwargs.keys() else 8
+        symmetric = kwargs["symmetric"] if "symmetric" in kwargs.keys() else True
+
+        self.conv1 = MetricConv(in_feats, n_hidden, info=info, embedding_dim=embedding_dim,symmetric=symmetric)
+
         # Instantiate the residual blocks
         res_blocks = []
-        for _ in range(kwargs['n_layers']):
-            res_blocks.append(MetricResBlock(n_hidden,info,embedding_dim=embedding_dim))
+        for _ in range(n_layers):
+            res_blocks.append(MetricResBlock(n_hidden, info, embedding_dim=embedding_dim,symmetric=symmetric))
         self.res_blocks = nn.ModuleList(res_blocks)
-        
-        self.conv2 = MetricConv(n_hidden,out_feats,info=info,embedding_dim=embedding_dim)
-   
+
+        self.conv2 = MetricConv(n_hidden, out_feats, info=info, embedding_dim=embedding_dim,symmetric=symmetric)
+
         self.nonlinear = nn.ELU()
-         
-    def forward(self,features: FloatTensor, pos: FloatTensor ,edges: LongTensor, faces: LongTensor, eps: float=1e-5) -> FloatTensor:
+
+    def forward(
+        self,
+        features: FloatTensor,
+        vertices: FloatTensor,
+        edges: LongTensor,
+        faces: LongTensor,
+        eps: float = 1e-5,
+    ) -> FloatTensor:
         r"""
         :param features: Input features per vertex
-        :param pos: Positions of vectors in \mathbf{R}^3
+        :param vertices: Positions of vectors in \mathbf{R}^3
         :param edges: Edge connectivity of vertices
         :param faces: Face indices of vertices
+        :param eps: Small epsilon used to avoid division by 0
+
+        :return: Returns tensor with ``out_feats`` features for each vertex
         """
-        
+
         self.metric_per_vertex = []
-        pos = (pos-pos.min())/(pos.max()-pos.min())
-        
+
         x = features
-        
-        x = self.conv1(x,pos,edges,faces)
-        x = (x-x.mean(dim=0))/(x.std(dim=0)+eps)
+
+        x = self.conv1(x, vertices, edges, faces)
+        x = (x - x.mean(dim=0)) / (x.std(dim=0) + eps)
         x = self.nonlinear(x)
         self.metric_per_vertex.append(self.conv1.metric_per_vertex)
-        
+
         for i in range(len(self.res_blocks)):
-            x = self.res_blocks[i](x,pos,edges,faces)
+            x = self.res_blocks[i](x, vertices, edges, faces)
             self.metric_per_vertex.append(self.res_blocks[i].metric_per_vertex)
-        
-        out = self.conv2(x,pos,edges,faces)
+
+        out = self.conv2(x, vertices, edges, faces)
         self.metric_per_vertex.append(self.conv2.metric_per_vertex)
-       
+
         return out
 
-class MetricConvNet(nn.Module):
-    r"""
-    All (``MetricConv``) convolutional network using a progressively wider network as described below: 
-
-                                in_feats->16->32->64->128->256->out_feats
-
-    :param in_channels: Number of input features per vertex
-    :param out_channels: Number of output features per vertex
-    :param \**kwargs: See below
-    :Keyword Arguments:
-        * classification (``bool``) -- Bool indicating whether model is end-to-end or classification 
-        * info (``str``) -- type of ``MetricConv`` to use
-        * n_hidden (``int``) -- Number of hidden layers used for for residual blocks
-        * embedding_dim (``int``) -- Embedding dimension of metric tensor used in ``MetricConv``
-    """
-    def __init__(self,in_feats: int, out_feats: int , **kwargs):
-        super(MetricConvNet,self).__init__() 
-        classification = kwargs['classification'] if 'classification' in kwargs.keys() else False
-        info =  kwargs['info'] if 'info' in kwargs.keys() else 'vanilla'
-        n_hidden =  kwargs['n_hidden'] if 'n_hidden' in kwargs.keys() else 64 
-        embedding_dim =  kwargs['embedding_dim'] if 'embedding_dim' in kwargs.keys() else 8
-
-        self.conv1 = MetricConv(in_feats,16,info=info,embedding_dim=embedding_dim)
-        self.conv2 = MetricConv(16,32,info=info,embedding_dim=embedding_dim)
-        self.conv3 = MetricConv(32,64,info=info,embedding_dim=embedding_dim)
-        self.conv4 = MetricConv(64,128,info=info,embedding_dim=embedding_dim)
-        self.conv5 = MetricConv(128,256,info=info,embedding_dim=embedding_dim)
-        self.conv6 = MetricConv(256,out_feats,info=info,embedding_dim=embedding_dim)
-
-        if classification:
-            assert kwargs['num_vertices'] is not None, "To use the classification layer you must specify num_vertices."
-            num_vertices = kwargs['num_vertices']
-            # If classification network then instantiate two linear layers used at end of network to convert to logits
-            self.fc1 = nn.Linear(256*num_vertices,128)
-            self.fc2 = nn.Linear(128,out_feats)
-   
-        self.classification = classification
-        self.nonlinear = nn.LeakyReLU()
-         
-    def forward(self,features: FloatTensor, pos: FloatTensor ,edges: LongTensor, faces: LongTensor, eps: float=1e-5) -> FloatTensor:
-        r"""
-        :param features: Input features per vertex
-        :param pos: Positions of vectors in \mathbf{R}^3
-        :param edges: Edge connectivity of vertices
-        :param faces: Face indices of vertices
-        """
-        self.metric_per_vertex = []
-        pos = (pos-pos.min())/(pos.max()-pos.min())
-        #pos = (pos-pos.mean(dim=0))/(pos.std(dim=0)+eps)
-
-        x = features
-
-        x = self.conv1(x,pos,edges,faces)
-        x = self.nonlinear(x)
-        x = (x-x.mean(dim=0))/(x.std(dim=0)+eps)
-        self.metric_per_vertex.append(self.conv1.metric_per_vertex)
-
-        x = self.conv2(x,pos,edges,faces)
-        x = self.nonlinear(x)
-        x = (x-x.mean(dim=0))/(x.std(dim=0)+eps)
-        self.metric_per_vertex.append(self.conv2.metric_per_vertex)
-        
-        x = self.conv3(x,pos,edges,faces)
-        x = self.nonlinear(x)
-        x = (x-x.mean(dim=0))/(x.std(dim=0)+eps)
-        self.metric_per_vertex.append(self.conv3.metric_per_vertex)
-        
-        x = self.conv4(x,pos,edges,faces)
-        x = self.nonlinear(x)
-        x = (x-x.mean(dim=0))/(x.std(dim=0)+eps)
-        self.metric_per_vertex.append(self.conv4.metric_per_vertex)
-        
-        x = self.conv5(x,pos,edges,faces)
-        x = self.nonlinear(x)
-        x = (x-x.mean(dim=0))/(x.std(dim=0)+eps)
-        self.metric_per_vertex.append(self.conv5.metric_per_vertex)
-        
-        if self.classification:
-            x = x.flatten()
-            x = self.fc1(x)
-            x = self.nonlinear(x)
-            x = F.dropout(x,training=self.training)
-
-            out = self.fc2(x)
-        else:
-            out = self.conv6(x,pos,edges,faces)
-            self.metric_per_vertex.append(self.conv6.metric_per_vertex)
-        
-        return out 
 
 class LinearMetricNet(nn.Module):
-    r'''
+    r"""
     This model adapts the architecture of the correspondence model used in SpiralNet++ (https://leichen2018.github.io/files/spiralnet_plusplus.pdf). We replace the SpiralNet++ convolutional operators with ``MetricConv`` operators.
 
     :param in_channels: Number of input features per vertex
@@ -204,40 +209,262 @@ class LinearMetricNet(nn.Module):
     :Keyword Arguments:
         * info (``str``) -- type of ``MetricConv`` to use
         * embedding_dim (``int``) -- Embedding dimension of metric tensor used in ``MetricConv``
-    '''
-    def __init__(self,in_feats: int, out_feats: int, **kwargs):
-        super(LinearMetricNet,self).__init__()
-        info =  kwargs['info'] if 'info' in kwargs.keys() else 'vanilla'
-        embedding_dim =  kwargs['embedding_dim'] if 'embedding_dim' in kwargs.keys() else 8
-        
-        self.fc0 = nn.Linear(3,16)
-        self.conv1 = MetricConv(16,32,info=info,embedding_dim=embedding_dim)
-        self.conv2 = MetricConv(32,64,info=info,embedding_dim=embedding_dim)
-        self.conv3 = MetricConv(64,128,info=info,embedding_dim=embedding_dim)
-        self.fc1 = nn.Linear(128,256)
-        self.fc2 = nn.Linear(256,out_feats)
+    """
+
+    def __init__(self, in_feats: int, out_feats: int, **kwargs):
+        super(LinearMetricNet, self).__init__()
+        info = kwargs["info"] if "info" in kwargs.keys() else "vanilla"
+        embedding_dim = kwargs["embedding_dim"] if "embedding_dim" in kwargs.keys() else 8
+        symmetric = kwargs["symmetric"] if "symmetric" in kwargs.keys() else True
+
+        self.fc0 = nn.Linear(3, 16)
+        self.conv1 = MetricConv(16, 32, info=info, embedding_dim=embedding_dim,symmetric=symmetric)
+        self.conv2 = MetricConv(32, 64, info=info, embedding_dim=embedding_dim,symmetric=symmetric)
+        self.conv3 = MetricConv(64, 128, info=info, embedding_dim=embedding_dim,symmetric=symmetric)
+        self.fc1 = nn.Linear(128, 256)
+        self.fc2 = nn.Linear(256, out_feats)
 
         self.reset_parameters()
-    
-    def reset_parameters(self):
-       nn.init.xavier_uniform_(self.fc0.weight, gain=1) 
-       nn.init.xavier_uniform_(self.fc1.weight, gain=1) 
-       nn.init.xavier_uniform_(self.fc2.weight, gain=1) 
-       nn.init.constant_(self.fc0.bias, 0)
-       nn.init.constant_(self.fc1.bias, 0)
-       nn.init.constant_(self.fc2.bias, 0)
 
-    def forward(self, pos: FloatTensor ,edges: LongTensor, faces: LongTensor, eps: float=1e-5) -> FloatTensor:
+    def reset_parameters(self) -> NoReturn:
         """
-        :param pos: Positions of vectors in \mathbf{R}^3
+        Sets initial parameters of weights follow a Uniform Xavier distribution for fully connected matrices and a uniform distribution for biases.
+        """
+        nn.init.xavier_uniform_(self.fc0.weight, gain=1)
+        nn.init.xavier_uniform_(self.fc1.weight, gain=1)
+        nn.init.xavier_uniform_(self.fc2.weight, gain=1)
+        nn.init.constant_(self.fc0.bias, 0)
+        nn.init.constant_(self.fc1.bias, 0)
+        nn.init.constant_(self.fc2.bias, 0)
+
+    def forward(self, features: FloatTensor, vertices: FloatTensor, edges: LongTensor, faces: LongTensor) -> FloatTensor:
+        """
+        :param features: Input features per vertex
+        :param vertices: Positions of vectors in \mathbf{R}^3
         :param edges: Edge connectivity of vertices
         :param faces: Face indices of vertices
+
+        :return: Returns tensor contains ``out_feats`` features for each vertex.
         """
-        x = F.elu(self.fc0(pos))
-        x = F.elu(self.conv1(x,pos,edges,faces))
-        x = F.elu(self.conv2(x,pos,edges,faces))
-        x = F.elu(self.conv3(x,pos,edges,faces))
+        x = features
+        x = F.elu(self.fc0(x))
+        x = F.elu(self.conv1(x, vertices, edges, faces))
+        x = F.elu(self.conv2(x, vertices, edges, faces))
+        x = F.elu(self.conv3(x, vertices, edges, faces))
         x = F.elu(self.fc1(x))
         x = F.dropout(x, training=self.training)
         out = self.fc2(x)
-        return out 
+        return out
+
+
+class MetricConvNet(nn.Module):
+    r"""
+    All (``MetricConv``) convolutional network using a progressively wider network as described below:
+
+                                in_feats->16->32->64->128->256->out_feats
+
+    :param in_channels: Number of input features per vertex
+    :param out_channels: Number of output features per vertex
+    :param \**kwargs: See below
+    :Keyword Arguments:
+        * classification (``bool``) -- Bool indicating whether model is end-to-end or classification
+        * info (``str``) -- type of ``MetricConv`` to use
+        * embedding_dim (``int``) -- Embedding dimension of metric tensor used in ``MetricConv``
+        * layers (``List[int]``) -- Sequence of conv layers to use``
+    """
+
+    def __init__(self, in_feats: int, out_feats: int, **kwargs):
+        super(MetricConvNet, self).__init__()
+        classification = kwargs["classification"] if "classification" in kwargs.keys() else False
+        info = kwargs["info"] if "info" in kwargs.keys() else "vanilla"
+        embedding_dim = kwargs["embedding_dim"] if "embedding_dim" in kwargs.keys() else 8
+        symmetric = kwargs["symmetric"] if "symmetric" in kwargs.keys() else True
+        layers = kwargs["layers"] if "layers" in kwargs.keys() else [16, 32, 64, 128, 256]
+        layers = [in_feats] + layers
+
+        convs = []
+        for i in range(len(layers) - 2):
+            if layers[i] == layers[i + 1]:
+                conv = MetricResBlock(layers[i], info, embedding_dim=embedding_dim,symmetric=symmetric)
+            else:
+                conv = MetricConv(layers[i], layers[i + 1], info=info, embedding_dim=embedding_dim,symmetric=symmetric)
+            convs.append(conv)
+
+        if classification:
+            assert kwargs["num_vertices"] is not None, "To use the classification layer you must specify num_vertices."
+            num_vertices = kwargs["num_vertices"]
+            # If classification network then instantiate two linear layers used at end of network to convert to logits
+            self.fc1 = nn.Linear(layers[-2] * num_vertices, layers[-1])
+            self.fc2 = nn.Linear(layers[-1], out_feats)
+
+            self.reset_parameters()
+        else:
+            if layers[-2] == layers[-1]:
+                conv = MetricResBlock(layers[i], info, embedding_dim=embedding_dim,symmetric=symmetric)
+            else:
+                conv = MetricConv(layers[-2], layers[-1], info=info, embedding_dim=embedding_dim,symmetric=symmetric)
+            convs.append(conv)
+            convs.append(MetricConv(layers[-1], out_feats, info=info, embedding_dim=embedding_dim,symmetric=symmetric))
+        self.convs = nn.ModuleList(convs)
+
+        self.classification = classification
+        self.nonlinear = nn.ELU()
+
+    def reset_parameters(self) -> NoReturn:
+        """
+        Sets initial parameters of weights follow a Uniform Xavier distribution for fully connected matrices and
+        a uniform distribution for biases.
+        """
+        nn.init.xavier_uniform_(self.fc1.weight, gain=1)
+        nn.init.xavier_uniform_(self.fc2.weight, gain=1)
+        nn.init.constant_(self.fc1.bias, 0)
+        nn.init.constant_(self.fc2.bias, 0)
+
+    def forward(
+        self,
+        features: FloatTensor,
+        vertices: FloatTensor,
+        edges: LongTensor,
+        faces: LongTensor,
+        eps: float = 1e-5,
+    ) -> FloatTensor:
+        r"""
+        :param features: Input features per vertex
+        :param vertices: Positions of vectors in \mathbf{R}^3
+        :param edges: Edge connectivity of vertices
+        :param faces: Face indices of vertices
+        :param eps: Small epsilon used to avoid division by 0
+
+        :return: Returns tensor with ``out_feats`` features for each vertex
+        """
+        self.metric_per_vertex = []
+
+        x = features
+
+        for conv in self.convs:
+            x = conv(x, vertices, edges, faces)
+            x = self.nonlinear(x)
+            x = (x - x.mean(dim=0)) / (x.std(dim=0) + eps)
+            self.metric_per_vertex.append(conv.metric_per_vertex)
+
+        if self.classification:
+            x = x.flatten()
+            x = self.fc1(x)
+            x = self.nonlinear(x)
+            x = F.dropout(x, training=self.training)
+
+            out = self.fc2(x)
+        else:
+            out = self.conv6(x, vertices, edges, faces)
+            self.metric_per_vertex.append(self.conv6.metric_per_vertex)
+
+        return out
+
+
+class AutoEncoder(nn.Module):
+    r"""
+    AutoEncoder that uses MeshPool modules to downsample mesh. Once downsampled features are extracted via a sequene of residual blocks.
+
+    :param in_channels: Number of input features per vertex
+    :param out_channels: Number of output features per vertex
+    :param \**kwargs: See below
+    :Keyword Arguments:
+        * n_layers (``int``) -- Number of residual blocks
+        * info (``str``) -- type of ``MetricConv`` to use
+        * embedding_dim (``int``) -- Embedding dimension of metric tensor used in ``MetricConv``
+        * layers (``List[int]``) -- Sequence of conv layers to use``
+    """
+
+    def __init__(self, in_feats: int, out_feats: int, **kwargs):
+        super(AutoEncoder, self).__init__()
+        info = kwargs["info"] if "info" in kwargs.keys() else "vanilla"
+        embedding_dim = kwargs["embedding_dim"] if "embedding_dim" in kwargs.keys() else 8
+        layers = kwargs["layers"] if "layers" in kwargs.keys() else [16, 32, 64]
+        n_layers = kwargs["n_layers"] if "n_layers" in kwargs.keys() else 8
+        symmetric = kwargs["symmetric"] if "symmetric" in kwargs.keys() else True
+
+        enc_layers = [in_feats] + layers
+        dec_layers = [out_feats] + layers
+        dec_layers.reverse()
+
+        encoder = []
+        decoder = []
+        pools = []
+        for i in range(len(enc_layers) - 1):
+            encoder.append(MetricConv(enc_layers[i], enc_layers[i + 1], info=info, embedding_dim=embedding_dim,symmetric=symmetric))
+            pools.append(MeshPool(2))
+            decoder.append(MetricConv(dec_layers[i], dec_layers[i + 1], info=info, embedding_dim=embedding_dim,symmetric=symmetric))
+
+        res_blocks = []
+        for i in range(n_layers):
+            res_blocks.append(MetricResBlock(layers[-1], info, embedding_dim=embedding_dim,symmetric=symmetric))
+
+        self.encoder = nn.ModuleList(encoder)
+        self.decoder = nn.ModuleList(decoder)
+        self.pools = nn.ModuleList(pools)
+        self.res_blocks = nn.ModuleList(res_blocks)
+
+        self.nonlinear = nn.ELU()
+
+    def forward(
+        self,
+        features: FloatTensor,
+        vertices: FloatTensor,
+        edges: LongTensor,
+        faces: LongTensor,
+        eps: float = 1e-5,
+    ) -> FloatTensor:
+        r"""
+        :param features: Input features per vertex
+        :param vertices: Positions of vectors in \mathbf{R}^3
+        :param edges: Edge connectivity of vertices
+        :param faces: Face indices of vertices
+        :param eps: Small epsilon used to avoid division by 0
+
+        :return: Returns tensor with ``out_feats`` features for each vertex
+        """
+        self.metric_per_vertex = []
+        self.mesh_per_layer = []
+
+        x = features
+
+        for i in range(len(self.encoder)):
+            # Extract features
+            x = self.encoder[i](x, vertices, edges, faces)
+            x = self.nonlinear(x)
+            x = (x - x.mean(dim=0)) / (x.std(dim=0) + eps)
+
+            # Store information before downsampling
+            self.mesh_per_layer.append([x, vertices, edges, faces])
+
+            self.metric_per_vertex.append(self.encoder[i].metric_per_vertex)
+
+            # Downsample mesh and store cluster information
+            # sum_adj_transpose = self.encoder[i].weighted_adj.to_dense().sum(dim=1)
+            sum_adj_transpose = torch.sparse.sum(self.encoder[i].weighted_adj.coalesce(), dim=0).values()
+            # pool_features = torch.cat([sum_adj_transpose.unsqueeze(1),x_norm.unsqueeze(1)],dim=1)
+            pool_features = sum_adj_transpose
+
+            x, vertices, edges, faces, cluster = self.pools[i](
+                x, vertices, edges, faces.type(torch.long).t(), pool_features, self.encoder[i].weighted_adj
+            )
+            self.mesh_per_layer[-1].append(cluster)
+
+        self.mesh_per_layer.append([x, vertices, edges, faces, None])
+
+        for res_block in self.res_blocks:
+            x = res_block(x, vertices, edges, faces)
+
+        for i in range(len(self.decoder)):
+            x_old, vertices, edges, faces, cluster = self.mesh_per_layer[len(self.mesh_per_layer) - 2 - i]
+            x = x[cluster]
+            x = (x + x_old) / 2
+
+            x = self.decoder[i](x, vertices, edges, faces)
+            if i < len(self.decoder) - 1:
+                x = self.nonlinear(x)
+                x = (x - x.mean(dim=0)) / (x.std(dim=0) + eps)
+                self.metric_per_vertex.append(self.decoder[i].metric_per_vertex)
+
+        out = x
+        return out

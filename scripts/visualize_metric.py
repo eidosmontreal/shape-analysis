@@ -67,7 +67,6 @@ def visualize_metric(log_dir: str, data_dir: str, target_dir: str, data_idx: int
             eigs = metric.eig()[0][:, 0]
             lambda_max[i, j] = eigs.max()
             lambda_min[i, j] = eigs.min()
-            # weights[j] = (lambda_max*lambda_min)
             weights[j] = lambda_max[i, j]
         weights = weights.detach().numpy()
         weights /= weights.max()
@@ -87,7 +86,6 @@ def visualize_metric(log_dir: str, data_dir: str, target_dir: str, data_idx: int
         pred,
         fname=join(target_dir, f"{args['dataset']}_{data_idx}_pred.ply"),
     )
-    pdb.set_trace()
 
 
 if __name__ == "__main__":

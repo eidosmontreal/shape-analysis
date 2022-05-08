@@ -48,7 +48,7 @@ class MeshPool(torch.nn.Module):
         if in_channels == 0:
             return None
         else:
-            return nn.Sequential(Linear(2, 1), nn.LeakyReLU())
+            return torch.nn.Sequential(Linear(2, 1), nn.LeakyReLU())
 
     def forward(
         self,

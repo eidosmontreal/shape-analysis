@@ -100,4 +100,3 @@ def test_compute_face_area_and_angle():
     assert (torch.abs(answer_area - area) < 1e-6).sum() == 4
     assert (torch.abs(answer_std - std) < 1e-4).sum() == 4
     assert (torch.abs(answer_angle - angle) < 1e-6).sum() == 4
-    # assert (torch.abs(answer_area - area) < 1e-6).sum() == 4 and (torch.abs(answer_std-std)<1e-6).sum() == 4  and (torch.abs(answer_angle - angle) < 1e-6).sum() == 4

@@ -40,7 +40,7 @@ def get_parser():
         action="store_true",
         help="Indicate whether task is a classification task or not.",
     )
-    parser.add_argument("layers", nargs="*", default=[16, 32, 64, 128], help="Architecture for MetricConvNet")
+    parser.add_argument("--layers", nargs="*", default=[16, 32, 64, 128], help="Architecture for MetricConvNet")
     parser.add_argument("--info", type=str, default="face", help="Type of MetricConv to use")
     parser.add_argument(
         "--embedding-dim",

@@ -38,8 +38,6 @@ def visualize_pools(
 
         j = 0
         for (x, v, e, f, cluster) in model.mesh_per_layer:
-            # _,v,e,f,__ = pool(torch.rand(len(v)),v,e,f.type(torch.long).t())
-            # f = f.t()
             utils.mesh2obj(v.numpy(), f.numpy(), fname=join(target_dir, f"mesh{i}_pool{j}.obj"))
             verts.append(len(v))
             j += 1

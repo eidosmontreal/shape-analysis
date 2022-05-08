@@ -50,7 +50,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--splits",
         type=str,
-        default=None,
+        default='preprocess/coseg/splits.yaml',
         required=False,
         help="yaml containing train/test splits",
     )

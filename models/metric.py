@@ -14,7 +14,7 @@ def build_sparse_adjacency(
     num_vertices: int = None,
     remove_reference: bool = False,
 ) -> sparse.FloatTensor:
-    """
+    r"""
     Creates a sparse, right-stochastic matrix (rows sum to 1) based on given indices and values. The input values are passed through a kernel, after which the output is normalized based on local connectivity.
 
     :param edges: Edges/connectivity of nodes (size: n_edges x 2)
@@ -185,7 +185,7 @@ class Metric(nn.Module):
         edges: LongTensor,
         faces: LongTensor,
     ) -> FloatTensor:
-        """
+        r"""
         Function to be over-ridden when using ``Metric`` as base class.
 
         :param features: Input features per vertex
@@ -204,7 +204,7 @@ class Metric(nn.Module):
         edges: LongTensor,
         faces: LongTensor,
     ) -> sparse.FloatTensor:
-        """
+        r"""
         :param features: Input features per vertex
         :param vertices: Positions of vectors in \mathbf{R}^3
         :param edges: Edge connectivity of vertices
@@ -256,7 +256,7 @@ class FaceMetric(Metric):
         edges: LongTensor,
         faces: LongTensor,
     ) -> FloatTensor:
-        """
+        r"""
         Computes features to be passed into a ``MetricConv`` module.
         The features computed are the total area of all incident faces about each vertex, as well as the total interior angle.
 
@@ -298,7 +298,7 @@ class FeatureMetric(Metric):
     def compute_features(
         self, features: FloatTensor, vertices: FloatTensor, edges: LongTensor, faces: LongTensor, eps: float = 1e-8
     ) -> FloatTensor:
-        """
+        r"""
         Computes features to be passed into a ``MetricConv`` module.
         The features computed are the mean and standard deviations of the differences of the features between each reference node and its neighbours.
 
@@ -349,7 +349,7 @@ class TangentMetric(Metric):
     def compute_features(
         self, features: FloatTensor, vertices: FloatTensor, edges: LongTensor, faces: LongTensor, eps: float = 1e-8
     ) -> FloatTensor:
-        """
+        r"""
         Computes features to be passed into a ``MetricConv`` module.
         The features computed are the mean and standard deviation of all tangent vectors about each vertex.
 
@@ -392,7 +392,7 @@ class VanillaMetric(nn.Module):
     def forward(
         self, features: FloatTensor, vertices: FloatTensor, edges: LongTensor, faces: LongTensor
     ) -> sparse.FloatTensor:
-        """
+        r"""
         :param features: Input features per vertex
         :param vertices: Positions of vectors in \mathbf{R}^3
         :param edges: Edge connectivity of vertices

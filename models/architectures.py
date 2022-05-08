@@ -4,7 +4,6 @@ import torch
 from torch import FloatTensor, LongTensor, nn
 from torch.nn import functional as F
 
-from .mesh_pool import MeshPool
 from .metric_conv import MetricConv
 
 
